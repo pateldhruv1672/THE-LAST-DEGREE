@@ -199,6 +199,7 @@ class SnowflakeLoader:
         print(df.info())
 
         # --- Robust NaN-like cleanup before insertion into Snowflake ---
+        # Perform a single, comprehensive cleaning pass instead of multiple passes
 
         # Ensure object dtype so we can place None safely
         try:
@@ -207,20 +208,8 @@ class SnowflakeLoader:
             # if astype fails, continue with existing dtypes
             pass
 
-        # Replace pandas/numpy NaN with Python None (works across dtypes)
-        try:
-            df = df.where(pd.notnull(df), None)
-        except Exception:
-            # Fallback: apply per-cell replacement
-            df = df.applymap(lambda x: None if (isinstance(x, float) and math.isnan(x)) else x)
-
-        # Normalize string variants like 'nan', 'None', 'NULL', etc. to None
-        try:
-            df = df.applymap(self._clean_value)
-        except Exception:
-            # Last-resort: iterate columns
-            for col in df.columns:
-                df[col] = df[col].apply(self._clean_value)
+        # Single comprehensive cleaning pass using map (pandas 2.1+ compatible)
+        df = df.map(SnowflakeLoader._clean_value)
 
         # Save cleaned CSV for debugging / inspection
         try:
@@ -237,52 +226,13 @@ class SnowflakeLoader:
         except Exception as e:
             logger.warning(f"Failed to log DataFrame head: {e}")
 
-        # Convert DataFrame to list of tuples
+        # Convert DataFrame to list of tuples (data is already cleaned)
         records = df.to_records(index=False)
         data = [tuple(record) for record in records]
 
-        # Final defensive sanitization: ensure no NaN-like or invalid tokens remain
-        sanitized_data = []
-        for row in data:
-            new_row = []
-            for v in row:
-                # Convert numpy types and floats that are NaN to None
-                try:
-                    if isinstance(v, float) and math.isnan(v):
-                        new_row.append(None)
-                        continue
-                except Exception:
-                    pass
-
-                try:
-                    if isinstance(v, (np.floating,)) and np.isnan(v):
-                        new_row.append(None)
-                        continue
-                except Exception:
-                    pass
-
-                # Normalize string variants
-                if isinstance(v, str) and v.strip().lower() in {
-                    "nan",
-                    "none",
-                    "null",
-                    "na",
-                    "n/a",
-                    "nan.0",
-                }:
-                    new_row.append(None)
-                    continue
-
-                new_row.append(v)
-
-            sanitized_data.append(tuple(new_row))
-
-        # Replace data with sanitized_data for insertion
-        data = sanitized_data
-
-        # Log first sanitized row for debugging
+        # Log first row for debugging
         if data:
-            logger.debug(f"First sanitized row sample: {data[0]}")
+            logger.debug(f"First row sample: {data[0]}")
 
         if not data:
             logger.info("No rows to insert into staging table (DataFrame is empty).")
