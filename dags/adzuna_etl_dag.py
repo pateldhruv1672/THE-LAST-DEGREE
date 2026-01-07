@@ -317,47 +317,59 @@ def adzuna_etl_pipeline():
             
             return {'city': city, 'state': state}
         
-        # Transform jobs
-        transformed_jobs = []
-        for job in jobs:
-            if not job.get('job_id') or not job.get('job_title'):
-                continue
+        # Transform jobs - use pandas vectorized operations for better performance
+        if not jobs:
+            df = pd.DataFrame()
+        else:
+            # First create DataFrame from raw jobs - this is more efficient than row-by-row processing
+            df = pd.DataFrame(jobs)
             
-            location_data = clean_location(job.get('location', ''))
-            salary_min, salary_max = normalize_salary(
-                job.get('salary_min'),
-                job.get('salary_max')
-            )
+            # Filter out invalid jobs (missing required fields)
+            df = df[df['job_id'].notna() & df['job_title'].notna()]
             
-            salary_avg = None
-            if salary_min and salary_max:
-                salary_avg = (salary_min + salary_max) / 2
+            # Vectorized HTML cleaning for text fields
+            for col in ['job_title', 'company', 'description']:
+                if col in df.columns:
+                    df[col] = df[col].fillna('').apply(clean_html)
             
-            transformed_job = {
-                'job_id': str(job.get('job_id', '')),
-                'job_title': clean_html(job.get('job_title', '')),
-                'company': clean_html(job.get('company', '')),
-                'salary_min': salary_min,
-                'salary_max': salary_max,
-                'salary_avg': salary_avg,
-                'description': clean_html(job.get('description', '')),
-                'posting_date': parse_date(job.get('posting_date', '')),
-                'location': job.get('location', ''),
-                'city': location_data['city'],
-                'state': location_data['state'],
-                'category': job.get('category', ''),
-                'contract_type': job.get('contract_type', ''),
-                'contract_time': job.get('contract_time', ''),
-                'latitude': job.get('latitude'),
-                'longitude': job.get('longitude'),
-                'redirect_url': job.get('redirect_url', ''),
-                'load_date': date_str,
-                'extracted_at': datetime.utcnow().isoformat(),
-            }
-            transformed_jobs.append(transformed_job)
-        
-        # Create DataFrame
-        df = pd.DataFrame(transformed_jobs)
+            # Vectorized date parsing
+            if 'posting_date' in df.columns:
+                df['posting_date'] = df['posting_date'].fillna('').apply(parse_date)
+            
+            # Vectorized salary normalization
+            if 'salary_min' in df.columns and 'salary_max' in df.columns:
+                # Clean salary values
+                df['salary_min'] = pd.to_numeric(df['salary_min'], errors='coerce')
+                df['salary_max'] = pd.to_numeric(df['salary_max'], errors='coerce')
+                
+                # Swap if min > max (vectorized)
+                mask = (df['salary_min'].notna()) & (df['salary_max'].notna()) & (df['salary_min'] > df['salary_max'])
+                df.loc[mask, ['salary_min', 'salary_max']] = df.loc[mask, ['salary_max', 'salary_min']].values
+                
+                # Calculate average salary (vectorized)
+                df['salary_avg'] = (df['salary_min'] + df['salary_max']) / 2
+            else:
+                df['salary_avg'] = None
+            
+            # Vectorized location parsing
+            if 'location' in df.columns:
+                location_parsed = df['location'].fillna('').apply(clean_location)
+                df['city'] = location_parsed.apply(lambda x: x['city'])
+                df['state'] = location_parsed.apply(lambda x: x['state'])
+            
+            # Add metadata columns
+            df['job_id'] = df['job_id'].astype(str)
+            df['load_date'] = date_str
+            df['extracted_at'] = datetime.utcnow().isoformat()
+            
+            # Ensure all expected columns exist
+            expected_cols = ['job_id', 'job_title', 'company', 'salary_min', 'salary_max', 'salary_avg',
+                           'description', 'posting_date', 'location', 'city', 'state', 'category',
+                           'contract_type', 'contract_time', 'latitude', 'longitude', 'redirect_url',
+                           'load_date', 'extracted_at']
+            for col in expected_cols:
+                if col not in df.columns:
+                    df[col] = None
         
         # Remove duplicates
         initial_count = len(df)
