@@ -413,14 +413,8 @@ def adzuna_etl_pipeline():
         import numpy as np
         import math
 
-        # Ensure object dtype so we can place None safely
-        try:
-            df = df.astype(object)
-        except Exception:
-            # if astype fails, continue with existing dtypes
-            pass
-
         def _clean_value(v):
+            """Clean a single value, converting NaN-like values to None."""
             # None stays None
             if v is None:
                 return None
@@ -444,12 +438,15 @@ def adzuna_etl_pipeline():
                 return v
             return v
 
-        # Apply cleaning (row/column-wise)
-        df = df.applymap(_clean_value)
+        # Ensure object dtype so we can place None safely
+        try:
+            df = df.astype(object)
+        except Exception:
+            # if astype fails, continue with existing dtypes
+            pass
 
-        # Finally convert DataFrame rows to tuples
-        records = df.to_records(index=False)
-        data = [tuple(record) for record in records]
+        # Apply cleaning once (row/column-wise) - use map for pandas 2.1+ compatibility
+        df = df.map(_clean_value)
         
         # Get connection
         conn = hook.get_conn()
@@ -564,13 +561,7 @@ def adzuna_etl_pipeline():
             # Reorder columns to match staging table schema
             df = df[expected_columns]
 
-            # Replace pandas/numpy NA values with Python None so the DB driver binds NULL
-            try:
-                df = df.where(pd.notnull(df), None)
-            except Exception:
-                # fallback to elementwise clean
-                df = df.applymap(lambda x: None if (isinstance(x, float) and math.isnan(x)) else x)
-
+            # Data was already cleaned at the beginning, so we can directly convert to tuples
             # Convert DataFrame rows to tuples in the exact column order
             records = df.to_records(index=False)
             data = [tuple(record) for record in records]
@@ -578,41 +569,18 @@ def adzuna_etl_pipeline():
             # Snowflake stores unquoted identifiers as uppercase; use unquoted UPPER names to match
             columns_unquoted = ', '.join([c.upper() for c in expected_columns])
             logger.info(f"Inserting data into staging table {staging_qualified} with columns: {columns_unquoted}")
-            column_map = {i: col for i, col in enumerate(expected_columns)}
-
-            logger.info(
-                f"Inserting data into staging table {staging_qualified} "
-                f"with column index map: {column_map}"
-            )
-            placeholders = ', '.join(['%s'] * len(expected_columns))
             
+            placeholders = ', '.join(['%s'] * len(expected_columns))
             insert_sql = f"INSERT INTO {staging_qualified} ({columns_unquoted}) VALUES ({placeholders})"
 
             batch_size = 1000
             total_inserted = 0
-            def sanitize_row(row):
-                cleaned = []
-                for v in row:
-                    if isinstance(v, float) and math.isnan(v):
-                        cleaned.append(None)  # becomes NULL in Snowflake
-                    else:
-                        cleaned.append(v)
-                return tuple(cleaned)
 
-            data_clean = [sanitize_row(r) for r in data]
-
-            for i in range(0, len(data_clean), batch_size):
-                batch = data_clean[i:i + batch_size]
+            for i in range(0, len(data), batch_size):
+                batch = data[i:i + batch_size]
                 cursor.executemany(insert_sql, batch)
                 total_inserted += len(batch)
                 logger.info(f"Inserted batch {i//batch_size + 1}: {total_inserted}/{len(data)} rows")
-
-            # for i in range(0, len(data), batch_size):
-            #     batch = data[i:i + batch_size]
-                
-            #     cursor.executemany(insert_sql, batch)
-            #     total_inserted += len(batch)
-            #     logger.info(f"Inserted batch {i//batch_size + 1}: {total_inserted}/{len(data)} rows")
 
             # Merge staging to target (staging referenced by its fully-qualified name)
             merge_sql = f"""
