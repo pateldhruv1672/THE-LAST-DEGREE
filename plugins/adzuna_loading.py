@@ -209,7 +209,7 @@ class SnowflakeLoader:
             pass
 
         # Single comprehensive cleaning pass using map (pandas 2.1+ compatible)
-        df = df.map(self._clean_value)
+        df = df.map(SnowflakeLoader._clean_value)
 
         # Save cleaned CSV for debugging / inspection
         try:

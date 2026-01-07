@@ -358,11 +358,9 @@ def adzuna_etl_pipeline():
             else:
                 df['salary_avg'] = None
             
-            # Vectorized location parsing
+            # Vectorized location parsing - extract city and state in single operation
             if 'location' in df.columns:
-                location_parsed = df['location'].fillna('').apply(clean_location)
-                df['city'] = location_parsed.apply(lambda x: x['city'])
-                df['state'] = location_parsed.apply(lambda x: x['state'])
+                df[['city', 'state']] = df['location'].fillna('').apply(clean_location).apply(pd.Series)
             
             # Add metadata columns
             df['job_id'] = df['job_id'].astype(str)
